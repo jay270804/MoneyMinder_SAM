@@ -1,3 +1,4 @@
+import pytz  # Add this import at the top
 import json
 import boto3
 import os
@@ -31,10 +32,14 @@ def analyze_spending(event, context):
         params = event.get('queryStringParameters', {}) or {}
         logger.debug("Query parameters: %s", json.dumps(params))
 
+        # Update date handling to use IST
+        ist_timezone = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist_timezone)
+
         # Default to current month if no date range specified
-        start_date = params.get('startDate', datetime.now().strftime('%Y-%m-01'))
-        end_date = params.get('endDate', datetime.now().strftime('%Y-%m-%d'))
-        logger.info("Analyzing period from %s to %s", start_date, end_date)
+        start_date = params.get('startDate', now.strftime('%Y-%m-01'))
+        end_date = params.get('endDate', now.strftime('%Y-%m-%d'))
+        logger.info("Analyzing period from %s to %s (IST)", start_date, end_date)
 
         # Query transactions
         response = transactions_table.query(
@@ -94,39 +99,46 @@ def budget_status(event, context):
 
         budget_count = len(budgets)
         logger.info("Retrieved %d budgets", budget_count)
-        logger.debug("Budget items: %s", json.dumps(budgets, cls=DecimalEncoder))
 
-        # Get current month's transactions
-        current_month = datetime.now().strftime('%Y-%m')
+        # Get current month's transactions with IST timezone
+        ist_timezone = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist_timezone)
+        start_of_month = now.strftime('%Y-%m-01')
+        end_of_month = now.strftime('%Y-%m-%d')
+
+        logger.info("Using date range: %s to %s (IST)", start_of_month, end_of_month)
+
         transactions = transactions_table.query(
             KeyConditionExpression='userId = :uid',
-            FilterExpression='begins_with(#dt, :month)',
+            FilterExpression='#dt BETWEEN :start AND :end',
             ExpressionAttributeNames={'#dt': 'date'},
             ExpressionAttributeValues={
                 ':uid': user_id,
-                ':month': current_month
+                ':start': start_of_month,
+                ':end': end_of_month
             }
         ).get('Items', [])
 
         transaction_count = len(transactions)
-        logger.info("Retrieved %d transactions for month %s",
-                   transaction_count, current_month)
+        logger.info("Retrieved %d transactions for period %s to %s",
+                   transaction_count, start_of_month, end_of_month)
 
         # Calculate spending per category
-        spending = defaultdict(float)
+        spending = defaultdict(decimal.Decimal)  # Use Decimal for precise calculations
         for t in transactions:
-            spending[t['category']] += float(t['amount'])
+            amount = decimal.Decimal(str(t['amount']))  # Convert to Decimal safely
+            spending[t['category']] += amount
 
         logger.debug("Monthly spending by category: %s",
-                    json.dumps(dict(spending)))
+                    json.dumps(dict(spending), cls=DecimalEncoder))
 
         # Compare with budgets
         status = []
         for budget in budgets:
             category = budget['category']
-            limit = float(budget['limit'])
-            current = spending.get(category, 0)
-            percentage = (current / limit) * 100 if limit > 0 else 0
+            limit = decimal.Decimal(str(budget['limit']))
+            current = spending.get(category, decimal.Decimal('0'))
+            percentage = (current / limit * 100) if limit > 0 else decimal.Decimal('0')
 
             status.append({
                 'category': category,
@@ -146,7 +158,7 @@ def budget_status(event, context):
             'statusCode': 200,
             'headers': {'Content-Type': 'application/json'},
             'body': json.dumps({
-                'month': current_month,
+                'month': now.strftime('%Y-%m'),
                 'budgetStatus': status
             }, cls=DecimalEncoder)
         }

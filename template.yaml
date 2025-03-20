@@ -11,10 +11,15 @@ Globals:
       Variables:
         TRANSACTIONS_TABLE: !Ref TransactionsTable
         BUDGETS_TABLE: !Ref BudgetsTable
-        SNS_TOPIC_ARN: !Ref BudgetAlertsTopic
+        SES_SENDER_EMAIL: !Ref SenderEmailParameter
+
+Parameters:
+  SenderEmailParameter:
+    Type: String
+    Description: Email address to use as the sender for budget alerts
+    Default: jaypatel270804@gmail.com
 
 Resources:
-  # DynamoDB Tables
   TransactionsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -56,7 +61,6 @@ Resources:
         - AttributeName: category
           KeyType: RANGE
 
-  # Cognito User Pool
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
@@ -84,13 +88,7 @@ Resources:
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
 
-  # SNS Topic for Budget Alerts
-  BudgetAlertsTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      DisplayName: MoneyMinder Budget Alerts
 
-  # API Gateway
   ApiGateway:
     Type: AWS::Serverless::Api
     Properties:
@@ -105,7 +103,7 @@ Resources:
           CognitoAuthorizer:
             UserPoolArn: !GetAtt UserPool.Arn
 
-  # Lambda Functions
+  # Lambda Functions with updated policies
   CreateTransactionFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -116,8 +114,12 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TransactionsTable
-        - SNSPublishMessagePolicy:
-            TopicName: !GetAtt BudgetAlertsTopic.TopicName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: '*'
       Events:
         ApiEvent:
           Type: Api
@@ -125,6 +127,9 @@ Resources:
             RestApiId: !Ref ApiGateway
             Path: /transactions
             Method: post
+      Layers:
+        - !Ref DependenciesLayer
+
 
   GetTransactionsFunction:
     Type: AWS::Serverless::Function
@@ -143,6 +148,9 @@ Resources:
             RestApiId: !Ref ApiGateway
             Path: /transactions
             Method: get
+      Layers:
+        - !Ref DependenciesLayer
+
 
   CreateBudgetFunction:
     Type: AWS::Serverless::Function
@@ -161,6 +169,9 @@ Resources:
             RestApiId: !Ref ApiGateway
             Path: /budgets
             Method: post
+      Layers:
+        - !Ref DependenciesLayer
+
 
   GetBudgetsFunction:
     Type: AWS::Serverless::Function
@@ -179,6 +190,8 @@ Resources:
             RestApiId: !Ref ApiGateway
             Path: /budgets
             Method: get
+      Layers:
+        - !Ref DependenciesLayer
 
   AnalyzeSpendingFunction:
     Type: AWS::Serverless::Function
@@ -197,6 +210,8 @@ Resources:
             RestApiId: !Ref ApiGateway
             Path: /analytics/spending
             Method: get
+      Layers:
+        - !Ref DependenciesLayer
 
   BudgetStatusFunction:
     Type: AWS::Serverless::Function
@@ -217,8 +232,9 @@ Resources:
             RestApiId: !Ref ApiGateway
             Path: /analytics/budget-status
             Method: get
+      Layers:
+        - !Ref DependenciesLayer
 
-  # S3 Bucket for Frontend
   WebsiteBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -241,6 +257,15 @@ Resources:
             Principal: '*'
             Action: 's3:GetObject'
             Resource: !Join ['', ['arn:aws:s3:::', !Ref WebsiteBucket, '/*']]
+
+  DependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: money-minder-dependencies
+      Description: Dependencies for MoneyMinder functions
+      ContentUri: ./lambda-layer.zip
+      CompatibleRuntimes:
+        - python3.12
 
 Outputs:
   ApiEndpoint:

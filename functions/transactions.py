@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 import decimal
 import logging
+import pytz
 
 # Configure logging
 logger = logging.getLogger()
@@ -30,39 +31,38 @@ def create_transaction(event, context):
     try:
         # Parse request body
         body = json.loads(event['body'])
-        logger.debug("Request body: %s", json.dumps(body))
+        # logger.debug("Request body: %s", json.dumps(body))
 
         # Get user ID from Cognito authorizer
         user_id = event['requestContext']['authorizer']['claims']['sub']
-        logger.info("Processing transaction for user: %s", user_id)
+        # Get user email from Cognito claims
+        user_email = event['requestContext']['authorizer']['claims']['email']
+        # logger.info("Processing transaction for user: %s", user_id)
 
-        # Generate transaction ID (using date prefix for better querying)
-        date_prefix = datetime.now().strftime('%Y-%m-%d')
-        transaction_id = f"{date_prefix}#{str(uuid.uuid4())}"
+        # Get current time in IST
+        ist_timezone = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist_timezone)
 
-        # Prepare transaction item
-        amount = decimal.Decimal(str(body['amount']))
-        category = body['category']
-
+        # Use IST timestamp for transaction creation
         transaction = {
             'userId': user_id,
-            'transactionId': transaction_id,
-            'amount': amount,
-            'category': category,
-            'description': body.get('description', ''),
-            'date': body.get('date', date_prefix),
+            'transactionId': str(uuid.uuid4()),
+            'amount': decimal.Decimal(str(body.get('amount'))),
+            'category': body.get('category'),
+            'description': body.get('description'),
+            'date': body.get('date') or now.strftime('%Y-%m-%d'),
+            'createdAt': now.strftime('%Y-%m-%dT%H:%M:%S%z'),
             'paymentMethod': body.get('paymentMethod', 'other'),
-            'createdAt': datetime.now().isoformat()
         }
-        logger.debug("Prepared transaction: %s", json.dumps(transaction, cls=DecimalEncoder))
+        # logger.debug("Prepared transaction: %s", json.dumps(transaction, cls=DecimalEncoder))
 
         # Store transaction in DynamoDB
         transactions_table.put_item(Item=transaction)
-        logger.info("Transaction stored successfully with ID: %s", transaction_id)
+        # logger.info("Transaction stored successfully with ID: %s", transaction_id)
 
-        # Check budget status
-        check_budget(user_id, category, amount)
-        logger.info("Budget check completed for category: %s", category)
+        # Check budget status - pass user email for SES
+        check_budget(user_id, body['category'], body['amount'], user_email)
+        # logger.info("Budget check completed for category: %s", body['category'])
 
         return {
             'statusCode': 201,
@@ -71,7 +71,7 @@ def create_transaction(event, context):
             },
             'body': json.dumps({
                 'message': 'Transaction created successfully',
-                'transactionId': transaction_id
+                'transactionId': transaction['transactionId']
             })
         }
     except Exception as e:
@@ -95,6 +95,14 @@ def get_transactions(event, context):
         # Get query parameters
         params = event.get('queryStringParameters', {}) or {}
         logger.debug("Query parameters: %s", json.dumps(params))
+
+        # Update default date range to use IST
+        ist_timezone = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist_timezone)
+
+        start_date = params.get('startDate', now.strftime('%Y-%m-01'))
+        end_date = params.get('endDate', now.strftime('%Y-%m-%d'))
+        logger.info("Fetching transactions from %s to %s (IST)", start_date, end_date)
 
         # Prepare query
         query_params = {
@@ -165,9 +173,9 @@ def get_transactions(event, context):
             })
         }
 
-def check_budget(user_id, category, amount):
+def check_budget(user_id, category, amount, user_email):
     """Check if a transaction exceeds the user's budget"""
-    logger.info("Checking budget for user %s, category %s, amount %s", user_id, category, amount)
+    # logger.info("Checking budget for user %s, category %s, amount %s", user_id, category, amount)
 
     try:
         # Get budget for this category
@@ -180,12 +188,12 @@ def check_budget(user_id, category, amount):
 
         # If no budget exists, return
         if 'Item' not in response:
-            logger.info("No budget found for category: %s", category)
+            # logger.info("No budget found for category: %s", category)
             return
 
         budget = response['Item']
         budget_limit = budget['limit']
-        logger.debug("Found budget: %s", json.dumps(budget, cls=DecimalEncoder))
+        # logger.debug("Found budget: %s", json.dumps(budget, cls=DecimalEncoder))
 
         # Calculate current month's spending
         current_month = datetime.now().strftime('%Y-%m')
@@ -204,21 +212,56 @@ def check_budget(user_id, category, amount):
 
         # Calculate total spent
         total_spent = sum(item['amount'] for item in response.get('Items', []))
-        logger.info("Total spent in %s for category %s: %s", current_month, category, total_spent)
+        # logger.info("Total spent in %s for category %s: %s", current_month, category, total_spent)
 
         # Check if budget exceeded
         if total_spent > budget_limit:
-            logger.warning("Budget exceeded for category %s. Spent: %s, Limit: %s",
-                         category, total_spent, budget_limit)
+            # logger.warning("Budget exceeded for category %s. Spent: %s, Limit: %s",
+            #              category, total_spent, budget_limit)
 
-            # Send SNS notification
-            message = f"Budget Alert: You've spent ${total_spent} on {category}, exceeding your budget of ${budget_limit}"
-            sns.publish(
-                TopicArn=os.environ['SNS_TOPIC_ARN'],
-                Message=message,
-                Subject='MoneyMinder Budget Alert'
-            )
-            logger.info("Budget alert notification sent")
+            # Get SES client
+            ses = boto3.client('ses')
+
+            # Prepare email content
+            sender_email = os.environ['SES_SENDER_EMAIL']
+            subject = 'MoneyMinder Budget Alert'
+            body_text = f"Budget Alert: You've spent ${total_spent} on {category}, exceeding your budget of ${budget_limit}"
+            body_html = f"""
+            <html>
+            <head></head>
+            <body>
+              <h1>MoneyMinder Budget Alert</h1>
+              <p>You've spent <strong>${total_spent}</strong> on <strong>{category}</strong>.</p>
+              <p>This exceeds your budget of <strong>${budget_limit}</strong>.</p>
+              <p>Log in to your MoneyMinder account to review your spending and adjust your budget if needed.</p>
+            </body>
+            </html>
+            """
+
+            # Send email using SES
+            try:
+                response = ses.send_email(
+                    Source=sender_email,
+                    Destination={
+                        'ToAddresses': [user_email]
+                    },
+                    Message={
+                        'Subject': {
+                            'Data': subject
+                        },
+                        'Body': {
+                            'Text': {
+                                'Data': body_text
+                            },
+                            'Html': {
+                                'Data': body_html
+                            }
+                        }
+                    }
+                )
+                # logger.info("Budget alert email sent with MessageId: %s", response['MessageId'])
+            except Exception as e:
+                logger.error("Error sending email: %s", str(e))
 
             # Update budget item with alert status
             budgets_table.update_item(
@@ -231,7 +274,7 @@ def check_budget(user_id, category, amount):
                     ':val': True
                 }
             )
-            logger.info("Budget alert status updated")
+            # logger.info("Budget alert status updated")
 
     except Exception as e:
         logger.error("Error checking budget: %s", str(e), exc_info=True)

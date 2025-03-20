@@ -4,6 +4,7 @@ import os
 import decimal
 from datetime import datetime
 import logging
+import pytz
 
 # Configure logging
 logger = logging.getLogger()
@@ -37,18 +38,21 @@ def create_budget(event, context):
         budget_limit = decimal.Decimal(str(body['limit']))
         logger.info("Setting budget for category %s with limit %s", category, budget_limit)
 
-        # Create budget item
-        budget_item = {
+        # Get current time in IST
+        ist_timezone = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist_timezone)
+
+        budget = {
             'userId': user_id,
             'category': category,
             'limit': budget_limit,
-            'createdAt': datetime.now().isoformat(),
-            'updatedAt': datetime.now().isoformat()
+            'createdAt': now.strftime('%Y-%m-%dT%H:%M:%S%z'),
+            'updatedAt': now.strftime('%Y-%m-%dT%H:%M:%S%z')
         }
-        logger.debug("Prepared budget item: %s", json.dumps(budget_item, cls=DecimalEncoder))
+        logger.debug("Prepared budget item: %s", json.dumps(budget, cls=DecimalEncoder))
 
         # Save to DynamoDB
-        budgets_table.put_item(Item=budget_item)
+        budgets_table.put_item(Item=budget)
         logger.info("Budget saved successfully for category: %s", category)
 
         return {
@@ -78,6 +82,11 @@ def get_budgets(event, context):
         # Get user ID from Cognito authorizer
         user_id = event['requestContext']['authorizer']['claims']['sub']
         logger.info("Retrieving budgets for user: %s", user_id)
+
+        # If you have any date filtering, update it to use IST
+        ist_timezone = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist_timezone)
+        current_month = now.strftime('%Y-%m')
 
         # Query budgets for user
         response = budgets_table.query(
