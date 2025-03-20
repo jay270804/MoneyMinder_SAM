@@ -1,0 +1,10 @@
+{
+  "body": "{\"amount\": 100.50, \"category\": \"Groceries\", \"description\": \"Weekly groceries\", \"date\": \"2024-03-18\", \"paymentMethod\": \"credit\"}",
+  "requestContext": {
+    "authorizer": {
+      "claims": {
+        "sub": "test-user-123"
+      }
+    }
+  }
+}

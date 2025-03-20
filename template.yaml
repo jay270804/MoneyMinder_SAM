@@ -1,0 +1,260 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: MoneyMinder - Expense tracking with budget alerts
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: python3.12
+    MemorySize: 256
+    Environment:
+      Variables:
+        TRANSACTIONS_TABLE: !Ref TransactionsTable
+        BUDGETS_TABLE: !Ref BudgetsTable
+        SNS_TOPIC_ARN: !Ref BudgetAlertsTopic
+
+Resources:
+  # DynamoDB Tables
+  TransactionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: transactionId
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: transactionId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: CategoryIndex
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: category
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  BudgetsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: category
+          KeyType: RANGE
+
+  # Cognito User Pool
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: MoneyMinderUsers
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: MoneyMinderApp
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  # SNS Topic for Budget Alerts
+  BudgetAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: MoneyMinder Budget Alerts
+
+  # API Gateway
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        AllowOrigin: "'*'"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt UserPool.Arn
+
+  # Lambda Functions
+  CreateTransactionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./functions/
+      Handler: transactions.create_transaction
+      Description: Create a new transaction
+      Runtime: python3.12
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TransactionsTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt BudgetAlertsTopic.TopicName
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /transactions
+            Method: post
+
+  GetTransactionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./functions/
+      Handler: transactions.get_transactions
+      Description: List user transactions
+      Runtime: python3.12
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TransactionsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /transactions
+            Method: get
+
+  CreateBudgetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./functions/
+      Handler: budgets.create_budget
+      Description: Create or update a budget
+      Runtime: python3.12
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BudgetsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /budgets
+            Method: post
+
+  GetBudgetsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./functions/
+      Handler: budgets.get_budgets
+      Description: List user budgets
+      Runtime: python3.12
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BudgetsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /budgets
+            Method: get
+
+  AnalyzeSpendingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./functions/
+      Handler: analytics.analyze_spending
+      Description: Analyze spending patterns
+      Runtime: python3.12
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TransactionsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /analytics/spending
+            Method: get
+
+  BudgetStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./functions/
+      Handler: analytics.budget_status
+      Description: Get budget status
+      Runtime: python3.12
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TransactionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref BudgetsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /analytics/budget-status
+            Method: get
+
+  # S3 Bucket for Frontend
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Join ['', ['arn:aws:s3:::', !Ref WebsiteBucket, '/*']]
+
+Outputs:
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod"
+
+  UserPoolId:
+    Description: "Cognito User Pool ID"
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: "Cognito User Pool Client ID"
+    Value: !Ref UserPoolClient
+
+  WebsiteURL:
+    Description: "URL for the S3 hosted website"
+    Value: !GetAtt WebsiteBucket.WebsiteURL

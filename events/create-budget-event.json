@@ -1,0 +1,10 @@
+{
+  "body": "{\"category\": \"Groceries\", \"limit\": 500.00}",
+  "requestContext": {
+    "authorizer": {
+      "claims": {
+        "sub": "test-user-123"
+      }
+    }
+  }
+}

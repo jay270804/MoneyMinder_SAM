@@ -1,0 +1,14 @@
+{
+  "queryStringParameters": {
+    "category": "Groceries",
+    "startDate": "2024-03-01",
+    "endDate": "2024-03-18"
+  },
+  "requestContext": {
+    "authorizer": {
+      "claims": {
+        "sub": "test-user-123"
+      }
+    }
+  }
+}
