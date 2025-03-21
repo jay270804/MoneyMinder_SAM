@@ -61,8 +61,8 @@ def create_transaction(event, context):
         # logger.info("Transaction stored successfully with ID: %s", transaction_id)
 
         # Check budget status - pass user email for SES
-        # check_budget(user_id, body['category'], body['amount'], user_email)
-        # logger.info("Budget check completed for category: %s", body['category'])
+        check_budget(user_id, body['category'], body['amount'], user_email)
+        logger.info("Budget check completed for category: %s", body['category'])
 
         return {
             'statusCode': 201,
@@ -222,8 +222,7 @@ def check_budget(user_id, category, amount, user_email):
 
         # Check if budget exceeded
         if total_spent > budget_limit:
-            # logger.warning("Budget exceeded for category %s. Spent: %s, Limit: %s",
-            #              category, total_spent, budget_limit)
+            logger.warning("Budget exceeded for category %s. Spent: %s, Limit: %s", category, total_spent, budget_limit)
 
             # Get SES client
             ses = boto3.client('ses')
@@ -265,7 +264,7 @@ def check_budget(user_id, category, amount, user_email):
                         }
                     }
                 )
-                # logger.info("Budget alert email sent with MessageId: %s", response['MessageId'])
+                logger.info("Budget alert email sent with MessageId: %s", response['MessageId'])
             except Exception as e:
                 logger.error("Error sending email: %s", str(e))
 
