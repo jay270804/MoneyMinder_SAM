@@ -61,7 +61,7 @@ def create_transaction(event, context):
         # logger.info("Transaction stored successfully with ID: %s", transaction_id)
 
         # Check budget status - pass user email for SES
-        check_budget(user_id, body['category'], body['amount'], user_email)
+        # check_budget(user_id, body['category'], body['amount'], user_email)
         # logger.info("Budget check completed for category: %s", body['category'])
 
         return {
@@ -175,7 +175,7 @@ def get_transactions(event, context):
 
 def check_budget(user_id, category, amount, user_email):
     """Check if a transaction exceeds the user's budget"""
-    # logger.info("Checking budget for user %s, category %s, amount %s", user_id, category, amount)
+    logger.info("Checking budget for user %s, category %s, amount %s", user_id, category, amount)
 
     try:
         # Get budget for this category
@@ -188,21 +188,27 @@ def check_budget(user_id, category, amount, user_email):
 
         # If no budget exists, return
         if 'Item' not in response:
-            # logger.info("No budget found for category: %s", category)
+            logger.info("No budget found for category: %s", category)
             return
 
         budget = response['Item']
         budget_limit = budget['limit']
-        # logger.debug("Found budget: %s", json.dumps(budget, cls=DecimalEncoder))
+        logger.debug("Found budget: %s", json.dumps(budget, cls=DecimalEncoder))
 
-        # Calculate current month's spending
-        current_month = datetime.now().strftime('%Y-%m')
+        # Use IST timezone for current month calculation
+        ist_timezone = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist_timezone)
+        current_month = now.strftime('%Y-%m')
+        logger.info("Checking budget for month: %s (IST)", current_month)
 
         # Query transactions in this category for current month
         response = transactions_table.query(
             IndexName='CategoryIndex',
             KeyConditionExpression='userId = :uid AND category = :cat',
-            FilterExpression='begins_with(date, :month)',
+            FilterExpression='begins_with(#dt, :month)',
+            ExpressionAttributeNames={
+                '#dt': 'date'
+            },
             ExpressionAttributeValues={
                 ':uid': user_id,
                 ':cat': category,
@@ -264,16 +270,16 @@ def check_budget(user_id, category, amount, user_email):
                 logger.error("Error sending email: %s", str(e))
 
             # Update budget item with alert status
-            budgets_table.update_item(
-                Key={
-                    'userId': user_id,
-                    'category': category
-                },
-                UpdateExpression='SET alertSent = :val',
-                ExpressionAttributeValues={
-                    ':val': True
-                }
-            )
+            # budgets_table.update_item(
+            #     Key={
+            #         'userId': user_id,
+            #         'category': category
+            #     },
+            #     UpdateExpression='SET alertSent = :val',
+            #     ExpressionAttributeValues={
+            #         ':val': True
+            #     }
+            # )
             # logger.info("Budget alert status updated")
 
     except Exception as e:
